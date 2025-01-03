@@ -1,0 +1,44 @@
+//code 
+
+#define SIGNAL_PIN 2 // Pin connected to the Arduino signal (input pin)
+#define LED_PIN1 0   // First LED pin
+#define LED_PIN2 1   // Second LED pin
+#define LED_PIN3 3   // Third LED pin
+#define LED_PIN4 4   // Fourth LED pin
+#define LED_PIN5 5   // Fifth LED pin
+
+// Array to hold the state of the LEDs
+int ledPins[] = {LED_PIN1, LED_PIN2, LED_PIN3, LED_PIN4, LED_PIN5};
+int numLeds = sizeof(ledPins) / sizeof(ledPins[0]); // Total number of LEDs
+int ledCounter = 0; // Counter to track the number of pulses received
+
+void setup() {
+    pinMode(SIGNAL_PIN, INPUT); // Configure the signal pin as input
+
+    // Configure the LED pins as outputs and ensure they are off initially
+    for (int i = 0; i < numLeds; i++) {
+        pinMode(ledPins[i], OUTPUT);
+        digitalWrite(ledPins[i], LOW);
+    }
+}
+
+void loop() {
+    static int previousState = LOW; // Variable to remember the previous state of the signal
+
+    int signalState = digitalRead(SIGNAL_PIN); // Read the current state of the signal pin
+
+    if (signalState == HIGH && previousState == LOW) {
+        // A rising edge is detected; a pulse is given
+        if (ledCounter < numLeds) {
+            // Turn on LEDs up to the current counter value
+            for (int i = 0; i <= ledCounter; i++) {
+                digitalWrite(ledPins[i], HIGH);
+            }
+            ledCounter++; // Increment the counter for the next pulse
+        }
+
+        delay(10); //delay to keep the LEDs on for a short time
+    }
+
+    previousState = signalState; // Update the previous state
+}
