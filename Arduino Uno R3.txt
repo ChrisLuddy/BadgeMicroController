@@ -1,0 +1,524 @@
+//code 
+
+#include <LiquidCrystal.h> //library to control the LCD
+#define SIGNAL_PIN 7 // Pin for sending signals to the ATtiny
+#define PIN_BUTTON 2 // Pin for the button input
+#define PIN_READWRITE 10 // Pin for LCD read/write mode
+#define PIN_BUZZER 12  // Pin for controlling the buzzer
+#define PIN_SLIDE_SWITCH 8  // Pin for the slide switch
+#define DEBUG_PIN 13 // Pin for enabling debug mode
+#define SPRITE_RUN1 1 // Sprite for the first running pose of the hero
+#define SPRITE_RUN2 2 // Sprite for the second running pose of the hero
+#define SPRITE_JUMP 3 // Sprite for the hero's jump pose.
+#define SPRITE_JUMP_UPPER '.' // Character for the hero's head during a jump
+#define SPRITE_JUMP_LOWER 4 // Sprite for the lower part of the jump
+#define SPRITE_TERRAIN_EMPTY ' ' // Represents empty space in the terrain
+#define SPRITE_TERRAIN_SOLID 5 // Represents a solid block in the terrain
+#define HERO_HORIZONTAL_POSITION 1 // Horizontal position of the hero
+#define TERRAIN_WIDTH 16 // Number of columns in the terrain.
+#define HERO_POSITION_OFF 0 // Hero is not displayed (e.g., game over)
+#define HERO_POSITION_RUN_LOWER_1 1 // Hero running on the lower row, first pose
+#define HERO_POSITION_JUMP_1 3 // Hero starting a jump
+#define HERO_POSITION_JUMP_2 4 // Hero half-way up in the jump
+#define HERO_POSITION_JUMP_3 5 // Hero in the middle of the jump (upper row)
+#define HERO_POSITION_JUMP_4 6 // Hero further up in the jump (upper row)
+#define HERO_POSITION_JUMP_5 7 // Hero in the upper row, near the peak of the jump
+#define HERO_POSITION_JUMP_6 8 // Hero descending in the jump (upper row)
+#define HERO_POSITION_JUMP_7 9 // Hero halfway down in the jump
+#define HERO_POSITION_JUMP_8 10 // Hero about to land from the jump
+#define HERO_POSITION_RUN_UPPER_1 11 // Hero running on the upper row, first pose
+#define HERO_POSITION_RUN_UPPER_2 12 // Hero running on the upper row, second pose
+#define LEVEL_1_THRESHOLD 80 // Define thresholds for difficulty levels
+#define LEVEL_2_THRESHOLD 160
+#define LEVEL_3_THRESHOLD 240
+#define LEVEL_4_THRESHOLD 320
+#define LEVEL_5_THRESHOLD 400
+#include <EEPROM.h> // Library for reading/writing to the EEPROM
+#define HIGH_SCORE_ADDR 0 // EEPROM address for storing the high score
+
+LiquidCrystal lcd(11, 9, 6, 5, 4, 3); // Create instance to control the LCD
+
+static unsigned int highScore = 0; //store the highest score
+bool debugMode = false; // flag for enabling debug mode
+static char terrainUpper[TERRAIN_WIDTH + 1]; // array for the upper terrain row
+static char terrainLower[TERRAIN_WIDTH + 1]; // array for the lower terrain row
+volatile bool buttonPushed = false; // indicates if the button has been pressed
+volatile unsigned long lastDebounceTime = 0; // time of the last button press
+const unsigned long debounceDelay = 50; // debounce time for the button (in ms)
+static int currentLevel = 0; //game level
+unsigned long previousMillis = 0; // Store last time a note was played
+int currentNote = 0; // Current note
+
+void initializeGraphics() {
+    
+
+    static byte graphics[] = {
+
+        // Define graphical representations for different sprites.
+
+        // Run position 1
+
+        B01100, B01100, B00000, B01110, B11100, B01100, B11010, B10011,
+
+        // Run position 2
+
+        B01100, B01100, B00000, B01100, B01100, B01100, B01100, B01110,
+
+        // Jump
+
+        B01100, B01100, B00000, B11110, B01101, B11111, B10000, B00000,
+
+        // Jump lower
+
+        B11110, B01101, B11111, B10000, B00000, B00000, B00000, B00000,
+
+        // Ground (block)
+
+        B11111, B11111, B11111, B11111, B11111, B11111, B11111, B11111
+
+    };
+
+    // loop to create character sprites on the LCD
+    int i;
+    for (i = 0; i < 5; ++i) {
+        lcd.createChar(i + 1, &graphics[i * 8]); // create character animations for run, jump, and block
+    }
+    
+    for (i = 0; i < TERRAIN_WIDTH; ++i) {
+        terrainUpper[i] = SPRITE_TERRAIN_EMPTY; // set each upper terrain cell to empty
+        terrainLower[i] = SPRITE_TERRAIN_EMPTY; // same for lower
+    }
+}
+
+void advanceTerrain() {
+    // shift the terrain to the left to create the illusion of movement
+    for (int i = 0; i < TERRAIN_WIDTH - 1; ++i) {
+        terrainUpper[i] = terrainUpper[i + 1];
+        terrainLower[i] = terrainLower[i + 1];
+    }
+    
+    int blockProbabilityLower, blockProbabilityUpper; // set probability for both upper and lower 
+    switch (currentLevel) {
+        case 0:
+            blockProbabilityLower = 10;
+            blockProbabilityUpper = 0; // No upper blocks at this level
+            break;
+        case 1:
+            blockProbabilityLower = 10;
+            blockProbabilityUpper = 0;
+            break;
+        case 2:
+            blockProbabilityLower = 15;
+            blockProbabilityUpper = 0;
+            break;
+        case 3:
+            blockProbabilityLower = 20;
+            blockProbabilityUpper = 0;
+            break;
+        case 4:
+            blockProbabilityLower = 30;
+            blockProbabilityUpper = 15;// Add upper blocks
+            break;
+        case 5:
+        default:
+            blockProbabilityLower = 30; // High density for lower blocks
+            blockProbabilityUpper = 25; 
+            break;
+    }
+
+    if (random(0, 100) < blockProbabilityLower) {
+        terrainLower[TERRAIN_WIDTH - 1] = SPRITE_TERRAIN_SOLID; // Place a solid block at the end.
+    } else {
+        terrainLower[TERRAIN_WIDTH - 1] = SPRITE_TERRAIN_EMPTY; // Otherwise, leave it empty.
+    }
+
+  	if (random(0, 100) < blockProbabilityUpper) {
+        terrainUpper[TERRAIN_WIDTH - 1] = SPRITE_TERRAIN_SOLID; // Place a solid block at the end.
+    } else {
+        terrainUpper[TERRAIN_WIDTH - 1] = SPRITE_TERRAIN_EMPTY; // Otherwise, leave it empty.
+    }
+}
+
+void clearHeroPosition(char* terrainUpper, char* terrainLower) {
+    // Clear both upper and lower rows at the hero's horizontal position.
+    terrainUpper[HERO_HORIZONTAL_POSITION] = SPRITE_TERRAIN_EMPTY;
+    terrainLower[HERO_HORIZONTAL_POSITION] = SPRITE_TERRAIN_EMPTY;
+}
+
+bool drawHero(byte position, char* terrainUpper, char* terrainLower, unsigned int score) {
+    bool collide = false; // initialize collision flag
+    byte upper, lower; // hero parts (upper and lower)
+
+    // Determine hero's current state and sprites
+    switch (position) {
+        case HERO_POSITION_OFF:
+            upper = lower = SPRITE_TERRAIN_EMPTY;
+            break;
+        case HERO_POSITION_RUN_LOWER_1:
+            upper = SPRITE_TERRAIN_EMPTY;
+            lower = SPRITE_RUN1;
+            break;
+        case HERO_POSITION_JUMP_1:
+        case HERO_POSITION_JUMP_8:
+            upper = SPRITE_TERRAIN_EMPTY;
+            lower = SPRITE_JUMP;
+            break;
+        case HERO_POSITION_JUMP_2:
+        case HERO_POSITION_JUMP_7:
+            upper = SPRITE_JUMP_UPPER;
+            lower = SPRITE_JUMP_LOWER;
+            break;
+        case HERO_POSITION_JUMP_3:
+        case HERO_POSITION_JUMP_4:
+        case HERO_POSITION_JUMP_5:
+        case HERO_POSITION_JUMP_6:
+            upper = SPRITE_JUMP;
+            lower = SPRITE_TERRAIN_EMPTY;
+            break;
+        case HERO_POSITION_RUN_UPPER_1:
+            upper = SPRITE_RUN1;
+            lower = SPRITE_TERRAIN_EMPTY;
+            break;
+        case HERO_POSITION_RUN_UPPER_2:
+            upper = SPRITE_RUN2;
+            lower = SPRITE_TERRAIN_EMPTY;
+            break;
+        default:
+            upper = lower = SPRITE_TERRAIN_EMPTY;
+            break;
+    }
+
+    // Check collisions
+    if (upper != SPRITE_TERRAIN_EMPTY && terrainUpper[HERO_HORIZONTAL_POSITION] == SPRITE_TERRAIN_SOLID) {
+        collide = true;
+    }
+    if (lower != SPRITE_TERRAIN_EMPTY && terrainLower[HERO_HORIZONTAL_POSITION] == SPRITE_TERRAIN_SOLID) {
+        collide = true;
+    }
+
+    // Clear previous hero position
+    clearHeroPosition(terrainUpper, terrainLower);
+
+    // Update terrain with new hero position
+    terrainUpper[HERO_HORIZONTAL_POSITION] = upper;
+    terrainLower[HERO_HORIZONTAL_POSITION] = lower;
+
+    // Update the LCD display
+    lcd.setCursor(0, 0);
+    lcd.print(terrainUpper);
+    lcd.setCursor(0, 1);
+    lcd.print(terrainLower);
+    // Display score
+    lcd.setCursor(14, 0);
+    lcd.print(score);
+    return collide; // Return collision status
+}
+
+// called when the button is pressed
+void buttonPush() {
+    unsigned long currentTime = millis();
+    if (currentTime - lastDebounceTime > debounceDelay) {
+        buttonPushed = true; // set to true
+        lastDebounceTime = currentTime;
+    }
+}
+
+// display the "Start Game" message.
+void displayStartMessage() {
+    lcd.clear();
+    lcd.setCursor(0, 0); // Set the cursor to the start of the first row
+    lcd.print("Start Game"); // Print "Start Game"
+    lcd.clear(); // Clear the screen after displaying the message
+}
+
+void setup() {
+    highScore = EEPROM.read(HIGH_SCORE_ADDR) << 8 | EEPROM.read(HIGH_SCORE_ADDR + 1); // read highscore from memory
+    Serial.begin(9600);
+  	pinMode(SIGNAL_PIN, OUTPUT); // Configure the signal pin as output
+	digitalWrite(SIGNAL_PIN, LOW); // Ensure it's LOW initially
+  	pinMode(DEBUG_PIN, INPUT_PULLUP); // debug button
+    pinMode(PIN_READWRITE, OUTPUT);
+    digitalWrite(PIN_READWRITE, LOW); // Set the read/write pin to low (write mode)
+    pinMode(PIN_BUTTON, INPUT);
+    digitalWrite(PIN_BUTTON, HIGH); // Set the button pin as input and enable pull-up resistor.
+  	pinMode(PIN_BUZZER, OUTPUT); // Set the buzzer pin as output
+    pinMode(PIN_SLIDE_SWITCH, INPUT_PULLUP);  // D8 as input with pull-up resistor
+    attachInterrupt(0, buttonPush, FALLING); // call buttonPush() when the button is pressed (interrupt)
+    initializeGraphics(); // Initialize
+    lcd.begin(16, 2); // Initialize the LCD with 16 columns and 2 rows
+    displayStartMessage(); // start sim
+  
+}
+
+
+void displayLevelChange(int level) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Level ");
+    lcd.print(level); // Print the current level number.
+    delay(1000); // Display the level change for 1 second.
+    lcd.clear(); // Clear
+}
+
+bool isSoundOn() { // mute / unmute function
+    return digitalRead(PIN_SLIDE_SWITCH) == LOW;
+}
+
+int melody[] = { 
+  262, 294, 330, 349, 392, 440, 493, 523, 587, 659, 698, 784, 880, 987, 1046
+};
+
+int noteDurations[] = { 
+  4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4
+};
+
+void playStartSong() { // song using noteduration and the melody
+  for (int thisNote = 0; thisNote < 15; thisNote++) {
+    int noteDuration = 1000 / noteDurations[thisNote];
+    tone(PIN_BUZZER, melody[thisNote], noteDuration);
+    // Wait for the note to finish playing before starting the next one
+    int pauseBetweenNotes = noteDuration * 1.30;
+    delay(pauseBetweenNotes);
+    noTone(PIN_BUZZER);
+  }
+}
+
+void playBackgroundMusic() { // song using noteduration and the melody
+    unsigned long currentMillis = millis(); // Get the current time
+    int noteDuration = 1000 / noteDurations[currentNote]; // Calculate note duration
+    // Check if next note
+    if (currentMillis - previousMillis >= noteDuration) {
+        // Play the current note
+        tone(PIN_BUZZER, melody[currentNote], noteDuration);
+        // Move to the next note
+        currentNote++;
+        // restart
+        if (currentNote >= sizeof(melody) / sizeof(melody[0])) {
+            currentNote = 0;}
+        // update
+        previousMillis = currentMillis;
+    }
+}
+
+int getSpeedDelay(int level) {  // calculate speed based on current level
+    // Base speed is 100ms, reduce by 10% for each level after 0
+    int baseSpeed = 100;
+    int speedFactor = (100 - (level * 10)); // 10% faster per level
+    if (speedFactor < 30) {
+        speedFactor = 30; // Cap the speed at 30ms (to avoid making it too fast)
+    }
+    return speedFactor; // Return the calculated delay time
+}
+
+unsigned int readHighScore() { // read high score
+    unsigned int highScore = EEPROM.read(HIGH_SCORE_ADDR) << 8;
+    highScore |= EEPROM.read(HIGH_SCORE_ADDR + 1); // Combine high and low bytes
+    return highScore;
+}
+
+// Function to save the high score to EEPROM
+void saveHighScore(unsigned int score) {
+    EEPROM.write(HIGH_SCORE_ADDR, score >> 8); // Write the high byte
+    EEPROM.write(HIGH_SCORE_ADDR + 1, score & 0xFF); // Write the low byte
+}
+
+void checkDebugMode() {
+    if (digitalRead(DEBUG_PIN) == LOW) { // Assuming LOW means the switch is ON
+        debugMode = true;
+    } else {
+        debugMode = false;
+    }
+}
+
+void sendDebugInfo(byte heroPos, unsigned int distance, int currentLevel, bool playing) {
+    if (debugMode) { // prints to serial
+        Serial.println("==== Debug Information ====");
+        Serial.print("Hero Position: ");
+        Serial.println(heroPos);
+        Serial.print("Distance: ");
+        Serial.println(distance);
+        Serial.print("Current Level: ");
+        Serial.println(currentLevel);
+        Serial.print("Game State (Playing): ");
+        Serial.println(playing ? "Yes" : "No");
+        // Print terrain layout
+        Serial.print("Terrain Upper: ");
+        Serial.println(terrainUpper);
+        Serial.print("Terrain Lower: ");
+        Serial.println(terrainLower);
+        Serial.println("===========================");
+    }
+}
+
+char getUserInput() { // input througt serial terminal (1, 2, 3)
+    lcd.clear();
+    lcd.print("1.Play 2.Text"); // top line
+    lcd.setCursor(0, 2);
+    lcd.print("3.Debug"); // bottom
+    while (Serial.available() == 0) {
+        // Wait until there is input from the serial monitor
+    }
+    char choice = Serial.read(); // Read the input character
+    return choice;
+}
+
+void displayGameOver() {
+    // scroll "Game Over!!" from left to right on the top row
+    for (int i = 0; i < 16; i++) {
+        lcd.clear(); // clear the screen for each new position
+        lcd.setCursor(i, 0);
+        lcd.print(" Game Over!!");
+        delay(300);
+    }
+  
+    // scroll "Try Again!!" from right to left on the bottom row
+    for (int i = 16; i >= -9; i--) {
+        lcd.clear(); // clear
+        lcd.setCursor(i, 1);
+        lcd.print(" Try Again!!");
+        delay(300);
+    }
+    delay(100);
+}
+
+void loop() { // main loop
+    static byte heroPos = HERO_POSITION_RUN_LOWER_1; // hero's current position
+    static bool playing = false; // if the game running
+    static bool GameOver = false; // gameover boolean 
+    static unsigned int distance = 0; // score
+    static int currentLevel = 0; // Current game level
+    static int level = 0;
+    static int lastLevelSent = -1; // keep track of the last level sent to the ATtiny.
+  
+  	checkDebugMode(); // check for debug button
+  
+    if (!playing && currentLevel == 0) {
+       lcd.setCursor(0, 0);
+          lcd.print("Start?"); // start game? 
+      delay(2000);
+    }
+
+    if (!playing) {
+        // If not playing, display the "Game Over" state.
+        drawHero(HERO_POSITION_OFF, terrainUpper, terrainLower, distance >> 3);
+        if (distance > 0) {
+          lcd.setCursor(0, 0);  
+          lcd.clear();
+          lcd.print("Game Over"); // Display "Game Over" message.
+          delay(1000);
+          lcd.clear();
+          lcd.print("Press to start");
+          lcd.setCursor(0, 1); 
+          lcd.print("High Score:");
+          lcd.print(highScore);
+          GameOver = true;
+          delay(5000);
+        }
+
+     	if ((distance >> 3) > highScore) {
+        highScore = distance >> 3; // Update high score.
+        saveHighScore(highScore); // Save new high score to EEPROM.
+    	}
+      
+        if (!playing && buttonPushed) { // Start a new game when the button is pressed.
+            Serial.println("Button pressed, starting game...");
+            initializeGraphics();
+            heroPos = HERO_POSITION_RUN_LOWER_1;
+            playing = true;
+            buttonPushed = false; // Reset the button state
+            distance = 0;
+            currentLevel = 0;
+            level = 0;
+        }
+        return; // Exit the loop if the game is not running.
+    }
+
+    distance++; // increment the score
+    advanceTerrain(); // move terrain
+
+    // Determine current level based on the distance
+    if (distance < LEVEL_1_THRESHOLD) {
+        level = 0; // Easy
+    } else if (distance < LEVEL_2_THRESHOLD) {
+        level = 1; // Medium
+    } else if (distance < LEVEL_3_THRESHOLD) {
+        level = 2; // Hard
+    } else if (distance < LEVEL_4_THRESHOLD) {
+        level = 3; // Very Hard
+    } else if (distance < LEVEL_5_THRESHOLD) {
+        level = 4; // Very Very Very Hard
+    } else {
+        level = 5; // Max level reached
+    }
+  	
+  	int speedDelay = getSpeedDelay(level); // speed delay based on the level
+
+    // Check if the level has changed and update the ATtiny signal.
+    if (level != currentLevel) {
+        currentLevel = level; // Update the current level.
+        displayLevelChange(currentLevel); // Display the level change.
+
+        // If the level has changed and is a new level, trun on led through ATtiny
+        if (level != lastLevelSent) {
+            lastLevelSent = level; // Update the last level sent
+            digitalWrite(SIGNAL_PIN, HIGH); // Turn on signal for ATtiny
+            delay(5); // Optional delay to ensure the signal is registered
+            digitalWrite(SIGNAL_PIN, LOW); // Turn off signal
+        }
+    }
+  
+    if (isSoundOn()) {
+      playBackgroundMusic(); // Handle background music
+    }
+  
+    if (GameOver) {
+        // If the game is over, handle the user's menu choices
+        char choice = getUserInput();
+        switch (choice) {
+            case '1': // Continue
+                Serial.println("Resuming the game...");
+                delay(500);
+                playing = true;
+                GameOver = false;
+                initializeGraphics();
+                heroPos = HERO_POSITION_RUN_LOWER_1;
+                distance = 0;
+                currentLevel = 0;
+                level = 0;
+                break;
+             case '2': // Display text
+                displayGameOver();
+                break;
+            case '3': // Debug Mode
+                Serial.println("Debug Mode Activated:");
+                Serial.print("Hero Position: "); Serial.println(heroPos);
+                Serial.print("Distance: "); Serial.println(distance);
+                Serial.print("Level: "); Serial.println(level);
+                Serial.print("Current Level: "); Serial.println(currentLevel);
+                Serial.print("Playing Status: "); Serial.println(playing);
+                delay(3000);
+                break;
+            default:
+                lcd.clear();
+                lcd.print("Invalid choice, try again.");
+                delay(1000);
+                break;
+        }
+        return; // Exit the loop if the game is not running
+    }
+
+    if (buttonPushed) { // if button pushed
+        heroPos = HERO_POSITION_JUMP_1; // jump
+        buttonPushed = false;
+    }
+
+    // Cycle through the hero's jump positions or return to running.
+    heroPos = (heroPos >= HERO_POSITION_JUMP_1 && heroPos <= HERO_POSITION_JUMP_8) ? heroPos + 1 : HERO_POSITION_RUN_LOWER_1;
+    if (heroPos > HERO_POSITION_JUMP_8) heroPos = HERO_POSITION_RUN_LOWER_1; // Loop back to running state after jumping.
+
+    if (drawHero(heroPos, terrainUpper, terrainLower, distance >> 3)) { // Check for collisions with terrain.
+        playing = false; // End the game if there is a collision.
+    }
+    delay(speedDelay); // Delay for 100 milliseconds to control the game speed.
+  	sendDebugInfo(heroPos, distance, currentLevel, playing); // send the debug info to the serial
+}
